@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-deep: #0a0e17;
+  --bg-card: rgba(15, 23, 42, 0.85);
+  --bg-card-border: rgba(51, 65, 85, 0.5);
+  --accent: #22d3ee;
+  --accent-dim: rgba(34, 211, 238, 0.15);
+  --accent-glow: rgba(34, 211, 238, 0.25);
+  --text-primary: #f1f5f9;
+  --text-muted: #94a3b8;
+  --danger: #f43f5e;
+  --danger-dim: rgba(244, 63, 94, 0.2);
+  --success: #34d399;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow-glow: 0 0 40px -10px var(--accent-glow);
+}
+
+@layer base {
+  body {
+    @apply antialiased;
+  }
+}
+
+/* Glass panel */
+.glass {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--bg-card-border);
+}
+
+.leaflet-container {
+  font-family: inherit;
+  z-index: 0;
+}
+
+/* Smooth focus rings */
+input:focus, button:focus-visible {
+  outline: none;
+}
+input:focus-visible, button:focus-visible {
+  box-shadow: 0 0 0 2px var(--bg-deep), 0 0 0 4px var(--accent);
+}
+
+/* Subtle entrance */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-in {
+  animation: fadeSlideUp 0.25s ease-out forwards;
+}

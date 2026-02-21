@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Env and data
+.env
+backend/data/
+*.db
+
+# Build and IDE
+.next/
+out/
+.idea/
+*.log
+.DS_Store
+
+# Feeds (videos/images can be large)
+backend/feeds/*.mp4
+backend/feeds/*.mov
+backend/feeds/*.avi
+backend/feeds/*.jpg
+backend/feeds/*.jpeg
+backend/feeds/*.png
+!backend/feeds/.gitkeep
