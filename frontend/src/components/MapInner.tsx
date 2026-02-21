@@ -28,7 +28,7 @@ export function MapInner({
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const map = L.map(containerRef.current).setView([37.7749, -122.4194], 13);
+    const map = L.map(containerRef.current).setView([33.9, -84.3], 10);
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       attribution: "&copy; OpenStreetMap, CartoDB",
     }).addTo(map);

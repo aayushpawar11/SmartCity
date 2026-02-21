@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 
-const DEFAULT_FROM = "37.7749,-122.4194";
-const DEFAULT_TO = "37.7849,-122.4094";
+const DEFAULT_FROM = "34.0289,-84.1986";
+const DEFAULT_TO = "33.7780,-84.3980";
 
 type Props = {
   onStartRoute: (from: [number, number], to: [number, number]) => void;
