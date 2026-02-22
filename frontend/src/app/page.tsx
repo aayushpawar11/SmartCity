@@ -400,8 +400,8 @@ export default function Home() {
       {/* Right side — map (3/4 width) */}
       <div className="flex-1 relative min-h-0">
         <Map
-          events={displayEvents}
-          incidents={incidents}
+          events={isDriving ? displayEvents : []}
+          incidents={isDriving ? incidents : []}
           selectedEvent={selectedEvent}
           selectedIncident={selectedIncident}
           onSelectEvent={handleSelectEvent}
