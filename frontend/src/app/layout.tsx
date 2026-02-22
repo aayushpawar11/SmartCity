@@ -10,7 +10,7 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "SmartCity Safety — Live Hazard Map",
+  title: "LookOut — Live Hazard Map",
   description: "AI-powered traffic and hazard detection for safer roads",
 };
 

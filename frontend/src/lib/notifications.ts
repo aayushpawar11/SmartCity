@@ -3,7 +3,7 @@
  * Browsers often block TTS until after a user gesture — "Enable alerts" triggers that.
  */
 
-const ALERTS_ENABLED_KEY = "smartcity-alerts-enabled";
+const ALERTS_ENABLED_KEY = "lookout-alerts-enabled";
 
 export type PermissionState = "default" | "granted" | "denied";
 
@@ -58,7 +58,7 @@ export function showBrowserNotification(title: string, body: string): void {
     const n = new Notification(title, {
       body,
       icon: "/favicon.ico",
-      tag: "smartcity-hazard",
+      tag: "lookout-hazard",
       requireInteraction: false,
     });
     n.onclick = () => {

@@ -34,7 +34,7 @@ export function MapInner({
   useEffect(() => {
     if (!containerRef.current) return;
     const map = L.map(containerRef.current).setView([33.9, -84.3], 10);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
       attribution: "&copy; OpenStreetMap, CartoDB",
     }).addTo(map);
     mapRef.current = map;
@@ -59,9 +59,9 @@ export function MapInner({
       const marker = L.circleMarker([ev.lat, ev.lng], {
         radius: ev.has_accident ? 12 : 8,
         fillColor: color,
-        color: "#fff",
+        color: "#1e293b",
         weight: 1.5,
-        opacity: 1,
+        opacity: 0.6,
         fillOpacity: 0.9,
       })
         .on("click", () => onSelectEvent(ev))
@@ -86,9 +86,9 @@ export function MapInner({
       const marker = L.circleMarker([inc.lat, inc.lon], {
         radius: isSevere ? 14 : 10,
         fillColor: color,
-        color: "#fff",
+        color: "#1e293b",
         weight: 2,
-        opacity: 1,
+        opacity: 0.6,
         fillOpacity: 0.9,
       })
         .on("click", () => onSelectIncident(inc))
@@ -111,9 +111,9 @@ export function MapInner({
     if (routeCoordinates && routeCoordinates.length >= 2) {
       const latlngs = routeCoordinates.map((c) => [c[0], c[1]] as L.LatLngTuple);
       const polyline = L.polyline(latlngs, {
-        color: "#22d3ee",
+        color: "#0891b2",
         weight: 5,
-        opacity: 0.95,
+        opacity: 0.9,
       }).addTo(map);
       routeLayerRef.current = polyline;
       map.fitBounds(polyline.getBounds(), { padding: [40, 40] });
@@ -129,10 +129,10 @@ export function MapInner({
     if (currentPosition) {
       const marker = L.circleMarker([currentPosition[0], currentPosition[1]], {
         radius: 10,
-        fillColor: "#22d3ee",
-        color: "#fff",
+        fillColor: "#0891b2",
+        color: "#1e293b",
         weight: 2,
-        opacity: 1,
+        opacity: 0.8,
         fillOpacity: 1,
       }).addTo(map);
       marker.bindTooltip("You", { permanent: false, direction: "top" });

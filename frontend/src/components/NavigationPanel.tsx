@@ -24,7 +24,7 @@ async function geocode(query: string): Promise<[number, number] | null> {
   try {
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
     const res = await fetch(url, {
-      headers: { "User-Agent": "SmartCity-Safety/1.0" },
+      headers: { "User-Agent": "LookOut/1.0" },
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -63,15 +63,8 @@ export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) 
   }
 
   return (
-    <div className="glass rounded-2xl p-4 min-w-[280px] shadow-xl border-white/5">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="h-8 w-8 rounded-lg bg-accent/20 flex items-center justify-center">
-          <svg className="h-4 w-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-          </svg>
-        </div>
-        <h3 className="text-sm font-semibold text-[#f1f5f9]">Navigate</h3>
-      </div>
+    <div>
+      <h3 className="text-sm font-semibold text-[#94a3b8] uppercase tracking-wider mb-3">Navigate</h3>
       {!isDriving ? (
         <>
           <div className="space-y-1.5">
@@ -81,7 +74,7 @@ export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) 
               value={from}
               onChange={(e) => setFrom(e.target.value)}
               placeholder="e.g. Georgia Tech, Atlanta"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[#f1f5f9] placeholder-[#64748b] focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-[#f1f5f9] placeholder-[#64748b] focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
             />
           </div>
           <div className="space-y-1.5 mt-3">
@@ -91,7 +84,7 @@ export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) 
               value={to}
               onChange={(e) => setTo(e.target.value)}
               placeholder="e.g. Hartsfield-Jackson Airport"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[#f1f5f9] placeholder-[#64748b] focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-[#f1f5f9] placeholder-[#64748b] focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
             />
           </div>
           {error && <p className="mt-2 text-xs text-danger">{error}</p>}
@@ -105,17 +98,17 @@ export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) 
           </button>
         </>
       ) : (
-        <div className="flex items-center justify-between pt-1">
-          <span className="flex items-center gap-2 text-sm text-[#94a3b8]">
+        <div className="flex items-center justify-between rounded-xl bg-white/5 border border-white/10 px-4 py-3">
+          <span className="flex items-center gap-2 text-sm text-[#e2e8f0]">
             <span className="h-2 w-2 rounded-full bg-accent animate-pulse" />
             Driving…
           </span>
           <button
             type="button"
             onClick={onEndRoute}
-            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-[#e2e8f0] hover:bg-white/15 transition-colors"
+            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-[#e2e8f0] hover:bg-white/15 border border-white/10 transition-colors"
           >
-            End
+            End route
           </button>
         </div>
       )}

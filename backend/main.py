@@ -1,5 +1,5 @@
 """
-SmartCity Traffic Intelligence API.
+LookOut — Traffic Intelligence API.
 All endpoints are async. The /process-frame endpoint runs the full pipeline:
   Gemini → SQL → Embedding → Actian → Similarity → Sphinx → OSRM → Response
 """
@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="SmartCity Traffic Intelligence API", version="0.2.0")
+app = FastAPI(title="LookOut — Traffic Intelligence API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -193,48 +193,136 @@ async def route(
     from_lng: float = Query(..., description="Origin longitude"),
     to_lat: float = Query(..., description="Destination latitude"),
     to_lng: float = Query(..., description="Destination longitude"),
-    avoid_lat: float = Query(None, description="Incident latitude to avoid"),
-    avoid_lng: float = Query(None, description="Incident longitude to avoid"),
+    avoid: str = Query(None, description="Semicolon-separated lat,lng pairs to avoid"),
 ):
-    """Get driving route via OSRM. When avoid_lat/avoid_lng are set, returns an alternative route."""
+    """Get driving route via OSRM, avoiding incident locations."""
     import httpx
     import math
+    import asyncio
 
-    waypoints = f"{from_lng},{from_lat};{to_lng},{to_lat}"
+    avoid_points: list[tuple[float, float]] = []
+    if avoid:
+        for pair in avoid.split(";"):
+            pair = pair.strip()
+            if not pair:
+                continue
+            parts = pair.split(",")
+            if len(parts) == 2:
+                try:
+                    avoid_points.append((float(parts[0]), float(parts[1])))
+                except ValueError:
+                    pass
+
     params = {"overview": "full", "geometries": "geojson", "alternatives": "true"}
 
-    if avoid_lat is not None and avoid_lng is not None:
-        bearing = math.atan2(to_lng - from_lng, to_lat - from_lat)
-        perp = bearing + math.pi / 2
-        offset = 0.02
-        via_lat = avoid_lat + offset * math.cos(perp)
-        via_lng = avoid_lng + offset * math.sin(perp)
-        waypoints = f"{from_lng},{from_lat};{via_lng},{via_lat};{to_lng},{to_lat}"
-
-    url = f"{OSRM_BASE_URL}/route/v1/driving/{waypoints}"
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+    async def fetch_routes(client: httpx.AsyncClient, wp: str) -> list:
+        url = f"{OSRM_BASE_URL}/route/v1/driving/{wp}"
+        try:
             r = await client.get(url, params=params)
+            if r.status_code == 429:
+                await asyncio.sleep(1.5)
+                r = await client.get(url, params=params)
             r.raise_for_status()
             data = r.json()
-    except Exception as e:
-        raise HTTPException(502, f"Routing failed: {e}")
-    if data.get("code") != "Ok" or not data.get("routes"):
-        raise HTTPException(404, "No route found")
+            if data.get("code") == "Ok" and data.get("routes"):
+                return data["routes"]
+        except Exception:
+            pass
+        return []
 
-    chosen = data["routes"][0]
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        if not avoid_points:
+            wp = f"{from_lng},{from_lat};{to_lng},{to_lat}"
+            candidates = await fetch_routes(client, wp)
+            if not candidates:
+                raise HTTPException(404, "No route found")
+            chosen = candidates[0]
+        else:
+            # Get the direct (shortest) route duration as a baseline
+            direct_wp = f"{from_lng},{from_lat};{to_lng},{to_lat}"
+            direct_routes = await fetch_routes(client, direct_wp)
+            base_duration = float("inf")
+            if direct_routes:
+                base_duration = sum(
+                    leg["duration"] for leg in direct_routes[0]["legs"]
+                )
 
-    if avoid_lat is not None and avoid_lng is not None and len(data["routes"]) > 1:
-        best_dist = 0
-        for rt in data["routes"]:
-            route_coords = rt["geometry"]["coordinates"]
-            min_d = min(
-                math.sqrt((c[1] - avoid_lat) ** 2 + (c[0] - avoid_lng) ** 2)
-                for c in route_coords
+            # 0.003 degrees ≈ 330m — if a route passes closer than this
+            # to an incident we consider it "hitting" the incident
+            INCIDENT_RADIUS = 0.003
+
+            def score_route(rt: dict) -> float:
+                """Balance incident avoidance with route efficiency.
+                Penalise routes that are much longer than the direct route."""
+                route_coords = rt["geometry"]["coordinates"]
+                duration = sum(leg["duration"] for leg in rt["legs"])
+
+                # How far does this route stay from each incident?
+                min_clearance = float("inf")
+                for alat, alng in avoid_points:
+                    closest = min(
+                        math.sqrt((c[1] - alat) ** 2 + (c[0] - alng) ** 2)
+                        for c in route_coords
+                    )
+                    min_clearance = min(min_clearance, closest)
+
+                # Does the route actually clear all incidents?
+                clears = min_clearance > INCIDENT_RADIUS
+
+                # Duration penalty: ratio of this route to the direct route.
+                # A route 1.5x longer than direct gets a big penalty.
+                dur_ratio = duration / base_duration if base_duration > 0 else 1.0
+
+                if clears:
+                    # Good route: reward clearance, penalise excessive length
+                    return 1000 + min_clearance - dur_ratio * 0.5
+                else:
+                    # Still hits an incident: prefer the one that at least
+                    # has some clearance, but don't reward long detours
+                    return min_clearance - dur_ratio * 0.5
+
+            # Vector math for perpendicular offset direction
+            dx = to_lat - from_lat
+            dy = to_lng - from_lng
+            route_len = math.sqrt(dx * dx + dy * dy) or 1e-9
+            px, py = -dy / route_len, dx / route_len
+
+            centroid_lat = sum(p[0] for p in avoid_points) / len(avoid_points)
+            centroid_lng = sum(p[1] for p in avoid_points) / len(avoid_points)
+            cx = centroid_lat - from_lat
+            cy = centroid_lng - from_lng
+            perp_dot = cx * px + cy * py
+            prefer_sign = -1 if perp_dot >= 0 else 1
+
+            mid_lat = (from_lat + to_lat) / 2
+            mid_lng = (from_lng + to_lng) / 2
+
+            # Moderate offsets: 0.04° ≈ 4.5km, 0.08° ≈ 9km, 0.13° ≈ 14km
+            waypoint_sets = []
+            for off in [0.04, 0.08, 0.13]:
+                s = prefer_sign
+                via_lat = mid_lat + s * off * px
+                via_lng = mid_lng + s * off * py
+                waypoint_sets.append(
+                    f"{from_lng},{from_lat};{via_lng},{via_lat};{to_lng},{to_lat}"
+                )
+            # Other side at a small offset
+            via_lat = mid_lat - prefer_sign * 0.06 * px
+            via_lng = mid_lng - prefer_sign * 0.06 * py
+            waypoint_sets.append(
+                f"{from_lng},{from_lat};{via_lng},{via_lat};{to_lng},{to_lat}"
             )
-            if min_d > best_dist:
-                best_dist = min_d
-                chosen = rt
+
+            all_candidates = list(direct_routes) if direct_routes else []
+            for wp in waypoint_sets:
+                routes = await fetch_routes(client, wp)
+                all_candidates.extend(routes)
+                await asyncio.sleep(1.1)
+
+            if not all_candidates:
+                raise HTTPException(404, "No route found")
+
+            chosen = max(all_candidates, key=score_route)
 
     coords = chosen["geometry"]["coordinates"]
     coordinates = [[c[1], c[0]] for c in coords]

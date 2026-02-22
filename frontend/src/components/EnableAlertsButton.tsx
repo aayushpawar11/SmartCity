@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   getAlertsEnabled,
   setAlertsEnabled,
@@ -15,7 +15,6 @@ type Props = {
   onEnabled?: () => void;
 };
 
-/** Unlock TTS with a test phrase (must be called from user gesture). */
 function playTestAlert(): void {
   const test: EventItem = {
     id: "test",
@@ -33,9 +32,16 @@ function playTestAlert(): void {
 }
 
 export function EnableAlertsButton({ onEnabled }: Props) {
-  const [enabled, setEnabledState] = useState(getAlertsEnabled);
-  const [permission, setPermission] = useState<PermissionState>(getNotificationPermission);
+  const [enabled, setEnabledState] = useState(false);
+  const [permission, setPermission] = useState<PermissionState>("default");
   const [loading, setLoading] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    setEnabledState(getAlertsEnabled());
+    setPermission(getNotificationPermission());
+  }, []);
 
   const handleEnable = useCallback(async () => {
     setLoading(true);
@@ -55,6 +61,18 @@ export function EnableAlertsButton({ onEnabled }: Props) {
       setLoading(false);
     }
   }, [onEnabled]);
+
+  if (!mounted) {
+    return (
+      <button
+        type="button"
+        disabled
+        className="rounded-xl bg-accent/20 px-3 py-2 text-sm font-medium text-accent opacity-60 transition-all"
+      >
+        Enable alerts
+      </button>
+    );
+  }
 
   if (enabled) {
     return (

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Map } from "@/components/Map";
-import { SearchBar } from "@/components/SearchBar";
 import { NavigationPanel } from "@/components/NavigationPanel";
 import { HazardAlertPopup } from "@/components/HazardAlertPopup";
 import { IncidentAlertPopup } from "@/components/IncidentAlertPopup";
@@ -12,7 +11,7 @@ import { IncidentPopup } from "@/components/IncidentPopup";
 import type { EventItem, IncidentItem } from "@/types/event";
 import { ratingToHazardLevel } from "@/types/event";
 import { speakAlert } from "@/lib/tts";
-import { getAlertsEnabled, showBrowserNotification } from "@/lib/notifications";
+import { getAlertsEnabled } from "@/lib/notifications";
 import {
   cumulativeDistances,
   hazardsAhead,
@@ -31,7 +30,6 @@ export type ToastItem = { id: string; event: EventItem };
 export default function Home() {
   // Legacy events
   const [events, setEvents] = useState<EventItem[]>([]);
-  const [searchResults, setSearchResults] = useState<EventItem[] | null>(null);
   const [loading, setLoading] = useState(true);
   const lastEventIds = useRef<Set<string>>(new Set());
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
@@ -46,6 +44,7 @@ export default function Home() {
   // Incident alert popup (reroute prompt)
   const [incidentAlert, setIncidentAlert] = useState<IncidentItem | null>(null);
   const dismissedAlertIds = useRef<Set<number>>(new Set());
+  const alertCooldownRef = useRef(false);
 
   // Navigation
   const [routeCoordinates, setRouteCoordinates] = useState<LatLng[] | null>(null);
@@ -71,7 +70,7 @@ export default function Home() {
     toastTimeoutsRef.current[id] = t;
   }, [dismissToast]);
 
-  // ---- Poll legacy events ----
+  // ---- Poll legacy events (silent — voice alerts only fire while driving) ----
   const fetchEvents = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/events`);
@@ -79,69 +78,26 @@ export default function Home() {
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
       setEvents(list);
-      const currentIds = new Set(list.map((e: EventItem) => e.id));
-      const alertsOn = getAlertsEnabled();
-      for (const e of list) {
-        if (e.hazard_level >= 6 && !lastEventIds.current.has(e.id)) {
-          addToast(e);
-          showBrowserNotification(
-            e.hazard_level >= 8 ? "High hazard" : "Hazard reported",
-            e.description
-          );
-          if (alertsOn) speakAlert(e);
-        }
-      }
-      lastEventIds.current = currentIds;
+      lastEventIds.current = new Set(list.map((e: EventItem) => e.id));
     } catch {
       // ignore
     } finally {
       setLoading(false);
     }
-  }, [addToast]);
+  }, []);
 
-  // ---- Poll incidents ----
+  // ---- Poll incidents (silent — alerts only fire while driving) ----
   const fetchIncidents = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/incidents`);
       if (!res.ok) return;
       const data: IncidentItem[] = await res.json();
       setIncidents(data);
-
-      const alertsOn = getAlertsEnabled();
-      for (const inc of data) {
-        if (!lastIncidentIds.current.has(inc.id)) {
-          const hazLevel = ratingToHazardLevel(inc.rating);
-          if (hazLevel >= 4) {
-            const syntheticEvent: EventItem = {
-              id: `inc-${inc.id}`,
-              feed_id: "pipeline",
-              lat: inc.lat,
-              lng: inc.lon,
-              occurred_at: inc.created_at,
-              has_police: false,
-              has_accident: inc.event_type === "accident",
-              hazard_level: hazLevel,
-              description: inc.notification || inc.description || inc.event_type,
-              image_path: inc.image_path,
-            };
-            addToast(syntheticEvent);
-            showBrowserNotification(
-              hazLevel >= 8 ? "High severity incident" : "Incident detected",
-              inc.notification || inc.description || inc.event_type,
-            );
-            if (alertsOn) speakAlert(syntheticEvent);
-
-            if (!incidentAlert && !dismissedAlertIds.current.has(inc.id)) {
-              setIncidentAlert(inc);
-            }
-          }
-        }
-      }
       lastIncidentIds.current = new Set(data.map((i) => i.id));
     } catch {
       // ignore
     }
-  }, [addToast]);
+  }, []);
 
   useEffect(() => {
     fetchEvents();
@@ -156,12 +112,13 @@ export default function Home() {
 
   // ---- Routing ----
   const fetchRoute = useCallback(
-    async (from: LatLng, to: LatLng, avoid?: LatLng) => {
+    async (from: LatLng, to: LatLng, avoidPoints?: LatLng[]) => {
       const [fromLat, fromLng] = from;
       const [toLat, toLng] = to;
       let url = `${API_BASE}/route?from_lat=${fromLat}&from_lng=${fromLng}&to_lat=${toLat}&to_lng=${toLng}`;
-      if (avoid) {
-        url += `&avoid_lat=${avoid[0]}&avoid_lng=${avoid[1]}`;
+      if (avoidPoints && avoidPoints.length > 0) {
+        const avoidStr = avoidPoints.map(([lat, lng]) => `${lat},${lng}`).join(";");
+        url += `&avoid=${encodeURIComponent(avoidStr)}`;
       }
       const res = await fetch(url);
       if (!res.ok) throw new Error("Route failed");
@@ -189,51 +146,67 @@ export default function Home() {
     [fetchRoute]
   );
 
+  const startAlertCooldown = useCallback(() => {
+    alertCooldownRef.current = true;
+    setTimeout(() => { alertCooldownRef.current = false; }, 4000);
+  }, []);
+
+  const getAllAvoidPoints = useCallback((): LatLng[] => {
+    const points: LatLng[] = incidents
+      .filter((inc) => ratingToHazardLevel(inc.rating) >= 4)
+      .map((inc) => [inc.lat, inc.lon] as LatLng);
+    events
+      .filter((e) => e.hazard_level >= 4)
+      .forEach((e) => points.push([e.lat, e.lng] as LatLng));
+    return points;
+  }, [incidents, events]);
+
   const onReroute = useCallback(() => {
     if (!routeCoordinates || !destination || cumDistRef.current.length === 0) return;
     const idx = Math.min(currentIndex, routeCoordinates.length - 1);
     const currentPos = routeCoordinates[idx];
-    const avoidPoint: LatLng | undefined = hazardPopup
-      ? [hazardPopup.event.lat, hazardPopup.event.lng]
-      : undefined;
     if (hazardPopup) dismissedHazardsRef.current.add(hazardPopup.event.id);
     setHazardPopup(null);
-    fetchRoute(currentPos, destination, avoidPoint);
-  }, [routeCoordinates, destination, currentIndex, hazardPopup, fetchRoute]);
+    startAlertCooldown();
+    fetchRoute(currentPos, destination, getAllAvoidPoints());
+  }, [routeCoordinates, destination, currentIndex, hazardPopup, fetchRoute, startAlertCooldown, getAllAvoidPoints]);
 
   const onContinueHazard = useCallback(() => {
     if (hazardPopup) dismissedHazardsRef.current.add(hazardPopup.event.id);
     setHazardPopup(null);
-  }, [hazardPopup]);
+    startAlertCooldown();
+  }, [hazardPopup, startAlertCooldown]);
 
   const onAcceptIncidentReroute = useCallback(async (inc: IncidentItem) => {
     dismissedAlertIds.current.add(inc.id);
     setIncidentAlert(null);
+    startAlertCooldown();
 
-    const avoidPoint: LatLng = [inc.lat, inc.lon];
     const safeDestination: LatLng = destination || [inc.lat + 0.015, inc.lon + 0.015];
+    const allAvoid = getAllAvoidPoints();
 
     if (routeCoordinates && routeCoordinates.length > 0) {
       const idx = Math.min(currentIndex, routeCoordinates.length - 1);
       const currentPos = routeCoordinates[idx];
       try {
-        await fetchRoute(currentPos, safeDestination, avoidPoint);
+        await fetchRoute(currentPos, safeDestination, allAvoid);
       } catch {
         // fallback
       }
     } else {
       try {
-        await fetchRoute(avoidPoint, safeDestination);
+        await fetchRoute([inc.lat, inc.lon], safeDestination, allAvoid);
       } catch {
         // fallback
       }
     }
-  }, [destination, routeCoordinates, currentIndex, fetchRoute]);
+  }, [destination, routeCoordinates, currentIndex, fetchRoute, startAlertCooldown, getAllAvoidPoints]);
 
   const onDismissIncidentAlert = useCallback((inc: IncidentItem) => {
     dismissedAlertIds.current.add(inc.id);
     setIncidentAlert(null);
-  }, []);
+    startAlertCooldown();
+  }, [startAlertCooldown]);
 
   const onEndRoute = useCallback(() => {
     setRouteCoordinates(null);
@@ -241,7 +214,10 @@ export default function Home() {
     setIsDriving(false);
     setDestination(null);
     setHazardPopup(null);
+    setIncidentAlert(null);
     dismissedHazardsRef.current.clear();
+    dismissedAlertIds.current.clear();
+    alertCooldownRef.current = false;
   }, []);
 
   // Drive simulation
@@ -303,23 +279,61 @@ export default function Home() {
     }
   }, [isDriving, routeCoordinates, currentIndex, events, incidents, hazardPopup]);
 
-  // ---- Search ----
-  const onSearch = useCallback(async (query: string) => {
-    if (!query.trim()) {
-      setSearchResults(null);
-      return;
-    }
-    try {
-      const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setSearchResults(data.results || []);
-    } catch {
-      setSearchResults([]);
-    }
-  }, []);
+  // Incident alert popup: only while driving, only for incidents ON the route, one at a time
+  useEffect(() => {
+    if (!isDriving || !routeCoordinates?.length || incidents.length === 0) return;
+    if (incidentAlert || hazardPopup || alertCooldownRef.current) return;
 
-  const displayEvents = searchResults !== null ? searchResults : events;
+    const idx = Math.min(currentIndex, routeCoordinates.length - 1);
+    const [curLat, curLng] = routeCoordinates[idx];
+
+    // ~0.005 degrees ≈ 0.5km — incident must be within this distance
+    // of some point on the remaining route to be considered "on route"
+    const ROUTE_PROXIMITY = 0.005;
+    const remainingRoute = routeCoordinates.slice(idx);
+
+    const eligible = incidents.filter((inc) => {
+      if (ratingToHazardLevel(inc.rating) < 4) return false;
+      if (dismissedAlertIds.current.has(inc.id)) return false;
+      // Check if this incident is actually near the current route
+      const nearRoute = remainingRoute.some(
+        ([lat, lng]) =>
+          Math.abs(inc.lat - lat) < ROUTE_PROXIMITY &&
+          Math.abs(inc.lon - lng) < ROUTE_PROXIMITY
+      );
+      return nearRoute;
+    });
+    if (eligible.length === 0) return;
+
+    let closest: IncidentItem | null = null;
+    let closestDist = Infinity;
+    for (const inc of eligible) {
+      const d = Math.sqrt((inc.lat - curLat) ** 2 + (inc.lon - curLng) ** 2);
+      if (d < closestDist) {
+        closestDist = d;
+        closest = inc;
+      }
+    }
+    if (closest) {
+      setIncidentAlert(closest);
+      if (getAlertsEnabled()) {
+        speakAlert({
+          id: `inc-${closest.id}`,
+          feed_id: "pipeline",
+          lat: closest.lat,
+          lng: closest.lon,
+          occurred_at: closest.created_at,
+          has_police: false,
+          has_accident: closest.event_type === "accident",
+          hazard_level: ratingToHazardLevel(closest.rating),
+          description: closest.notification || closest.description || closest.event_type,
+          image_path: closest.image_path,
+        });
+      }
+    }
+  }, [isDriving, routeCoordinates, currentIndex, incidents, incidentAlert, hazardPopup]);
+
+  const displayEvents = events;
   const currentPosition: LatLng | null =
     routeCoordinates && routeCoordinates.length > 0
       ? routeCoordinates[Math.min(currentIndex, routeCoordinates.length - 1)]
@@ -336,28 +350,36 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="relative h-screen w-full flex flex-col bg-[#0a0e17]">
-      <header className="flex-none glass flex flex-wrap items-center gap-4 px-5 py-3 z-10">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/20 text-accent shadow-glow-sm">
+    <main className="relative h-screen w-full flex bg-[#0a0e17]">
+      {/* Left sidebar — 1/4 width */}
+      <aside className="flex-none w-[320px] h-full glass border-r border-white/5 flex flex-col z-10 overflow-y-auto">
+        {/* Logo */}
+        <div className="flex items-center gap-3 px-5 pt-5 pb-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/20 text-accent shadow-glow-sm">
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
             </svg>
           </div>
           <h1 className="text-xl font-bold tracking-tight text-[#f1f5f9]">
-            SmartCity <span className="text-accent">Safety</span>
+            Look<span className="text-accent">Out</span>
           </h1>
         </div>
-        <SearchBar
-          onSearch={onSearch}
-          placeholder="Search events (e.g. accidents, police, flooding)"
-        />
-        <NavigationPanel
-          onStartRoute={onStartRoute}
-          isDriving={isDriving}
-          onEndRoute={onEndRoute}
-        />
-        <div className="flex items-center gap-3">
+
+        <div className="border-t border-white/5" />
+
+        {/* Navigation panel */}
+        <div className="px-4 py-4">
+          <NavigationPanel
+            onStartRoute={onStartRoute}
+            isDriving={isDriving}
+            onEndRoute={onEndRoute}
+          />
+        </div>
+
+        <div className="border-t border-white/5" />
+
+        {/* Alerts & incident count */}
+        <div className="px-5 py-4 flex items-center gap-3">
           <EnableAlertsButton />
           {incidents.length > 0 && (
             <span className="text-xs text-[#64748b]">
@@ -365,7 +387,17 @@ export default function Home() {
             </span>
           )}
         </div>
-      </header>
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-white/5">
+          <p className="text-[11px] text-[#475569]">Routing by OSRM &middot; Maps by OpenStreetMap</p>
+        </div>
+      </aside>
+
+      {/* Right side — map (3/4 width) */}
       <div className="flex-1 relative min-h-0">
         <Map
           events={displayEvents}
