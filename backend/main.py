@@ -121,6 +121,48 @@ async def analyze():
     return {"new_events": new_events, "count": len(new_events)}
 
 
+@app.post("/seed-feeds")
+async def seed_feeds():
+    """Process every image in backend/feeds through the full pipeline.
+
+    Filename convention: lat_lon_type.jpg  (e.g. 33.880244_-84.271938_accident.jpg)
+    Each image goes through: Gemini → SQL → Embedding → Actian → Sphinx → OSRM
+    """
+    feeds_dir = Path(__file__).parent / "feeds"
+    if not feeds_dir.exists():
+        raise HTTPException(404, "feeds/ directory not found")
+
+    images = sorted(
+        p for p in feeds_dir.iterdir()
+        if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp") and p.is_file()
+    )
+    if not images:
+        return {"message": "No images found in feeds/", "results": []}
+
+    results = []
+    for img_path in images:
+        parts = img_path.stem.split("_")
+        try:
+            lat = float(parts[0])
+            lon = float(parts[1])
+        except (IndexError, ValueError):
+            logger.warning("Skipping %s — can't parse lat_lon from filename", img_path.name)
+            continue
+
+        image_bytes = img_path.read_bytes()
+        logger.info("seed-feeds: processing %s (%.4f, %.4f, %d bytes)", img_path.name, lat, lon, len(image_bytes))
+        result = await process_frame_pipeline(image_bytes, lat=lat, lon=lon)
+        results.append({
+            "file": img_path.name,
+            "incident_id": result["incident"]["id"],
+            "event_type": result["incident"]["event_type"],
+            "severity": result["incident"]["severity"],
+            "decision": result["decision"]["action"],
+        })
+
+    return {"message": f"Processed {len(results)} feed images", "results": results}
+
+
 @app.post("/seed")
 async def seed():
     """Insert demo events so the map has data without running analysis."""
