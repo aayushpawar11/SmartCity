@@ -1,16 +1,18 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import type { EventItem } from "@/types/event";
+import type { EventItem, IncidentItem } from "@/types/event";
 
 export type LatLng = [number, number];
 
 type MapProps = {
   events: EventItem[];
+  incidents: IncidentItem[];
   selectedEvent: EventItem | null;
+  selectedIncident: IncidentItem | null;
   onSelectEvent: (e: EventItem | null) => void;
+  onSelectIncident: (i: IncidentItem | null) => void;
   loading?: boolean;
-  /** Navigation: route polyline and current car position */
   routeCoordinates?: LatLng[] | null;
   currentPosition?: LatLng | null;
 };

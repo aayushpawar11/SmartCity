@@ -1,22 +1,26 @@
 """
-Event + vector storage. Uses SQLite + in-memory vectors by default.
-Swap to Actian VectorAI when ACTIAN_CONNECTION_STRING is set (see actian_adapter.py).
+Event + incident storage. Uses aiosqlite for async operations.
+Events table: legacy feed-based analysis.
+Incidents table: new /process-frame pipeline with structured classification.
 """
 from __future__ import annotations
 
 import json
-import sqlite3
+import logging
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from config import ACTIAN_ENABLED, DB_PATH
+import aiosqlite
 
-# Ensure data dir exists
+from config import DB_PATH
+
+logger = logging.getLogger(__name__)
+
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-SCHEMA = """
+EVENTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     feed_id TEXT NOT NULL,
@@ -35,19 +39,132 @@ CREATE INDEX IF NOT EXISTS idx_events_occurred ON events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_events_hazard ON events(hazard_level);
 """
 
+INCIDENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT,
+    confidence REAL,
+    timestamp TEXT,
+    lat REAL,
+    lon REAL,
+    severity TEXT,
+    vehicles_detected INTEGER,
+    blocked_lanes INTEGER,
+    clearance_minutes REAL,
+    image_path TEXT,
+    description TEXT,
+    notification TEXT,
+    raw_json TEXT,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_ts ON incidents(timestamp);
+CREATE INDEX IF NOT EXISTS idx_incidents_type ON incidents(event_type);
+"""
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
+
+def _db_path() -> str:
+    return str(DB_PATH)
 
 
-def init_db() -> None:
-    with _get_conn() as c:
-        c.executescript(SCHEMA)
+async def init_db() -> None:
+    async with aiosqlite.connect(_db_path()) as conn:
+        await conn.executescript(EVENTS_SCHEMA)
+        await conn.executescript(INCIDENTS_SCHEMA)
+        await conn.commit()
+    logger.info("Database initialized (events + incidents tables)")
 
 
-def insert_event(
+# ---------------------------------------------------------------------------
+# Incidents (new pipeline)
+# ---------------------------------------------------------------------------
+
+async def save_incident(metadata: dict) -> int:
+    """Insert a classified incident and return its auto-incremented id."""
+    now = time.time()
+    ts = metadata.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    raw = json.dumps(metadata)
+    async with aiosqlite.connect(_db_path()) as conn:
+        cursor = await conn.execute(
+            """
+            INSERT INTO incidents
+            (event_type, confidence, timestamp, lat, lon, severity,
+             vehicles_detected, blocked_lanes, clearance_minutes, image_path,
+             description, notification, raw_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                metadata.get("event_type", "unknown"),
+                metadata.get("confidence", 0.0),
+                ts,
+                metadata.get("lat", 0.0),
+                metadata.get("lon", 0.0),
+                metadata.get("severity", "unknown"),
+                metadata.get("vehicles_detected", 0),
+                metadata.get("blocked_lanes", 0),
+                metadata.get("clearance_minutes"),
+                metadata.get("image_path"),
+                metadata.get("description", ""),
+                metadata.get("notification", ""),
+                raw,
+                now,
+            ),
+        )
+        await conn.commit()
+        incident_id = cursor.lastrowid
+    logger.info("Saved incident %d: %s", incident_id, metadata.get("event_type"))
+    return incident_id
+
+
+async def update_incident_image_path(incident_id: int, image_path: str) -> None:
+    async with aiosqlite.connect(_db_path()) as conn:
+        await conn.execute(
+            "UPDATE incidents SET image_path = ? WHERE id = ?",
+            (image_path, incident_id),
+        )
+        await conn.commit()
+
+
+async def get_recent_incidents(limit: int = 50) -> list[dict[str, Any]]:
+    async with aiosqlite.connect(_db_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            """
+            SELECT id, event_type, confidence, timestamp, lat, lon, severity,
+                   vehicles_detected, blocked_lanes, clearance_minutes,
+                   image_path, description, notification, created_at
+            FROM incidents
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    return [
+        {
+            "id": r["id"],
+            "event_type": r["event_type"],
+            "confidence": r["confidence"],
+            "timestamp": r["timestamp"],
+            "lat": r["lat"],
+            "lon": r["lon"],
+            "severity": r["severity"],
+            "vehicles_detected": r["vehicles_detected"],
+            "blocked_lanes": r["blocked_lanes"],
+            "clearance_minutes": r["clearance_minutes"],
+            "image_path": r["image_path"],
+            "description": r["description"],
+            "notification": r["notification"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Events (legacy feed-based pipeline)
+# ---------------------------------------------------------------------------
+
+async def insert_event(
     feed_id: str,
     lat: float,
     lng: float,
@@ -61,34 +178,29 @@ def insert_event(
     eid = str(uuid.uuid4())
     now = time.time()
     emb_json = json.dumps(embedding) if embedding else None
-    with _get_conn() as c:
-        c.execute(
+    async with aiosqlite.connect(_db_path()) as conn:
+        await conn.execute(
             """
             INSERT INTO events
-            (id, feed_id, lat, lng, occurred_at, has_police, has_accident, hazard_level, description, image_path, embedding_json, created_at)
+            (id, feed_id, lat, lng, occurred_at, has_police, has_accident,
+             hazard_level, description, image_path, embedding_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                eid,
-                feed_id,
-                lat,
-                lng,
-                now,
+                eid, feed_id, lat, lng, now,
                 1 if has_police else 0,
                 1 if has_accident else 0,
-                hazard_level,
-                description,
-                image_path,
-                emb_json,
-                now,
+                hazard_level, description, image_path, emb_json, now,
             ),
         )
+        await conn.commit()
     return eid
 
 
-def get_events(limit: int = 200) -> list[dict[str, Any]]:
-    with _get_conn() as c:
-        rows = c.execute(
+async def get_events(limit: int = 200) -> list[dict[str, Any]]:
+    async with aiosqlite.connect(_db_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
             """
             SELECT id, feed_id, lat, lng, occurred_at, has_police, has_accident,
                    hazard_level, description, image_path, created_at
@@ -97,7 +209,8 @@ def get_events(limit: int = 200) -> list[dict[str, Any]]:
             LIMIT ?
             """,
             (limit,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [
         {
             "id": r["id"],
@@ -116,10 +229,10 @@ def get_events(limit: int = 200) -> list[dict[str, Any]]:
     ]
 
 
-def get_events_with_embeddings(limit: int = 500) -> list[dict[str, Any]]:
-    """For vector search when not using Actian: load all and filter in memory."""
-    with _get_conn() as c:
-        rows = c.execute(
+async def get_events_with_embeddings(limit: int = 500) -> list[dict[str, Any]]:
+    async with aiosqlite.connect(_db_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
             """
             SELECT id, feed_id, lat, lng, occurred_at, has_police, has_accident,
                    hazard_level, description, image_path, embedding_json, created_at
@@ -129,7 +242,8 @@ def get_events_with_embeddings(limit: int = 500) -> list[dict[str, Any]]:
             LIMIT ?
             """,
             (limit,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     out = []
     for r in rows:
         emb = json.loads(r["embedding_json"]) if r["embedding_json"] else None
@@ -152,9 +266,11 @@ def get_events_with_embeddings(limit: int = 500) -> list[dict[str, Any]]:
     return out
 
 
-def get_event_by_id(eid: str) -> dict[str, Any] | None:
-    with _get_conn() as c:
-        r = c.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
+async def get_event_by_id(eid: str) -> dict[str, Any] | None:
+    async with aiosqlite.connect(_db_path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute("SELECT * FROM events WHERE id = ?", (eid,))
+        r = await cursor.fetchone()
     if not r:
         return None
     return {

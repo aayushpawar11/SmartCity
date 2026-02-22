@@ -3,6 +3,7 @@
 import L from "leaflet";
 import { useEffect, useRef } from "react";
 import type { EventItem } from "@/types/event";
+import { severityColor } from "@/types/event";
 import type { MapInnerProps } from "./Map";
 
 function hazardColor(level: number): string {
@@ -14,8 +15,11 @@ function hazardColor(level: number): string {
 
 export function MapInner({
   events,
+  incidents,
   selectedEvent,
+  selectedIncident,
   onSelectEvent,
+  onSelectIncident,
   loading,
   routeCoordinates,
   currentPosition,
@@ -23,6 +27,7 @@ export function MapInner({
   const mapRef = useRef<L.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<L.CircleMarker[]>([]);
+  const incidentMarkersRef = useRef<L.CircleMarker[]>([]);
   const routeLayerRef = useRef<L.Polyline | null>(null);
   const carMarkerRef = useRef<L.CircleMarker | null>(null);
 
@@ -39,9 +44,11 @@ export function MapInner({
       map.remove();
       mapRef.current = null;
       markersRef.current = [];
+      incidentMarkersRef.current = [];
     };
   }, []);
 
+  // Legacy event markers
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -66,6 +73,34 @@ export function MapInner({
       markersRef.current.push(marker);
     }
   }, [events, onSelectEvent]);
+
+  // Incident markers (from /process-frame pipeline)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    incidentMarkersRef.current.forEach((m) => m.remove());
+    incidentMarkersRef.current = [];
+    for (const inc of incidents) {
+      const color = severityColor(inc.severity);
+      const isSevere = inc.severity === "high" || inc.severity === "critical";
+      const marker = L.circleMarker([inc.lat, inc.lon], {
+        radius: isSevere ? 14 : 10,
+        fillColor: color,
+        color: "#fff",
+        weight: 2,
+        opacity: 1,
+        fillOpacity: 0.9,
+      })
+        .on("click", () => onSelectIncident(inc))
+        .addTo(map);
+      const label = (inc.description || inc.event_type).slice(0, 40);
+      marker.bindTooltip(label + (label.length >= 40 ? "…" : ""), {
+        permanent: false,
+        direction: "top",
+      });
+      incidentMarkersRef.current.push(marker);
+    }
+  }, [incidents, onSelectIncident]);
 
   // Route polyline
   useEffect(() => {

@@ -7,7 +7,9 @@ import { NavigationPanel } from "@/components/NavigationPanel";
 import { HazardAlertPopup } from "@/components/HazardAlertPopup";
 import { EnableAlertsButton } from "@/components/EnableAlertsButton";
 import { Toast } from "@/components/Toast";
-import type { EventItem } from "@/types/event";
+import { IncidentPopup } from "@/components/IncidentPopup";
+import type { EventItem, IncidentItem } from "@/types/event";
+import { severityToHazardLevel } from "@/types/event";
 import { speakAlert } from "@/lib/tts";
 import { getAlertsEnabled, showBrowserNotification } from "@/lib/notifications";
 import {
@@ -26,6 +28,7 @@ const TOAST_TTL_MS = 6000;
 export type ToastItem = { id: string; event: EventItem };
 
 export default function Home() {
+  // Legacy events
   const [events, setEvents] = useState<EventItem[]>([]);
   const [searchResults, setSearchResults] = useState<EventItem[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,6 +36,11 @@ export default function Home() {
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Incidents (from /process-frame pipeline)
+  const [incidents, setIncidents] = useState<IncidentItem[]>([]);
+  const [selectedIncident, setSelectedIncident] = useState<IncidentItem | null>(null);
+  const lastIncidentIds = useRef<Set<number>>(new Set());
 
   // Navigation
   const [routeCoordinates, setRouteCoordinates] = useState<LatLng[] | null>(null);
@@ -43,6 +51,7 @@ export default function Home() {
   const [hazardPopup, setHazardPopup] = useState<HazardAhead | null>(null);
   const dismissedHazardsRef = useRef<Set<string>>(new Set());
 
+  // ---- Toast helpers ----
   const dismissToast = useCallback((id: string) => {
     const t = toastTimeoutsRef.current[id];
     if (t) clearTimeout(t);
@@ -57,6 +66,7 @@ export default function Home() {
     toastTimeoutsRef.current[id] = t;
   }, [dismissToast]);
 
+  // ---- Poll legacy events ----
   const fetchEvents = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/events`);
@@ -77,19 +87,65 @@ export default function Home() {
         }
       }
       lastEventIds.current = currentIds;
-    } catch (_) {
+    } catch {
       // ignore
     } finally {
       setLoading(false);
     }
   }, [addToast]);
 
+  // ---- Poll incidents ----
+  const fetchIncidents = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/incidents`);
+      if (!res.ok) return;
+      const data: IncidentItem[] = await res.json();
+      setIncidents(data);
+
+      const alertsOn = getAlertsEnabled();
+      for (const inc of data) {
+        if (!lastIncidentIds.current.has(inc.id)) {
+          const hazLevel = severityToHazardLevel(inc.severity);
+          if (hazLevel >= 6) {
+            const syntheticEvent: EventItem = {
+              id: `inc-${inc.id}`,
+              feed_id: "pipeline",
+              lat: inc.lat,
+              lng: inc.lon,
+              occurred_at: inc.created_at,
+              has_police: inc.event_type === "police_activity",
+              has_accident: inc.event_type === "accident",
+              hazard_level: hazLevel,
+              description: inc.notification || inc.description || inc.event_type,
+              image_path: inc.image_path,
+            };
+            addToast(syntheticEvent);
+            showBrowserNotification(
+              hazLevel >= 8 ? "High severity incident" : "Incident detected",
+              inc.notification || inc.description || inc.event_type,
+            );
+            if (alertsOn) speakAlert(syntheticEvent);
+          }
+        }
+      }
+      lastIncidentIds.current = new Set(data.map((i) => i.id));
+    } catch {
+      // ignore
+    }
+  }, [addToast]);
+
   useEffect(() => {
     fetchEvents();
-    const t = setInterval(fetchEvents, POLL_MS);
-    return () => clearInterval(t);
-  }, [fetchEvents]);
+    fetchIncidents();
+    const t1 = setInterval(fetchEvents, POLL_MS);
+    const t2 = setInterval(fetchIncidents, POLL_MS);
+    return () => {
+      clearInterval(t1);
+      clearInterval(t2);
+    };
+  }, [fetchEvents, fetchIncidents]);
 
+  // ---- Routing ----
   const fetchRoute = useCallback(
     async (from: LatLng, to: LatLng) => {
       const [fromLat, fromLng] = from;
@@ -144,7 +200,7 @@ export default function Home() {
     dismissedHazardsRef.current.clear();
   }, []);
 
-  // Drive simulation: advance position along route
+  // Drive simulation
   useEffect(() => {
     if (!isDriving || !routeCoordinates || routeCoordinates.length === 0) return;
     const interval = setInterval(() => {
@@ -159,24 +215,40 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [isDriving, routeCoordinates]);
 
-  // Hazard detection along route
+  // Hazard detection along route (combines legacy events + incidents)
   useEffect(() => {
     if (!isDriving || !routeCoordinates?.length || cumDistRef.current.length === 0) return;
+    const combinedHazardSources = [
+      ...events.map((e) => ({
+        id: e.id,
+        description: e.description,
+        hazard_level: e.hazard_level,
+        lat: e.lat,
+        lng: e.lng,
+      })),
+      ...incidents.map((inc) => ({
+        id: `inc-${inc.id}`,
+        description: inc.notification || inc.description || inc.event_type,
+        hazard_level: severityToHazardLevel(inc.severity),
+        lat: inc.lat,
+        lng: inc.lon,
+      })),
+    ];
     const hazards = hazardsAhead(
       currentIndex,
       routeCoordinates,
       cumDistRef.current,
-      events,
+      combinedHazardSources,
       { maxMilesAhead: 3, maxDistToRouteKm: 0.4, minHazardLevel: 4 }
     );
     const first = hazards.find((h) => !dismissedHazardsRef.current.has(h.event.id));
     if (first && !hazardPopup) {
       setHazardPopup(first);
       if (getAlertsEnabled()) speakAlert({
-        ...first.event,
+        id: first.event.id,
+        feed_id: "",
         lat: first.event.lat,
         lng: first.event.lng,
-        feed_id: "",
         occurred_at: 0,
         has_police: false,
         has_accident: first.event.hazard_level >= 6,
@@ -185,8 +257,9 @@ export default function Home() {
         image_path: null,
       });
     }
-  }, [isDriving, routeCoordinates, currentIndex, events, hazardPopup]);
+  }, [isDriving, routeCoordinates, currentIndex, events, incidents, hazardPopup]);
 
+  // ---- Search ----
   const onSearch = useCallback(async (query: string) => {
     if (!query.trim()) {
       setSearchResults(null);
@@ -207,6 +280,16 @@ export default function Home() {
     routeCoordinates && routeCoordinates.length > 0
       ? routeCoordinates[Math.min(currentIndex, routeCoordinates.length - 1)]
       : null;
+
+  const handleSelectIncident = useCallback((i: IncidentItem | null) => {
+    setSelectedIncident(i);
+    setSelectedEvent(null);
+  }, []);
+
+  const handleSelectEvent = useCallback((e: EventItem | null) => {
+    setSelectedEvent(e);
+    setSelectedIncident(null);
+  }, []);
 
   return (
     <main className="relative h-screen w-full flex flex-col bg-[#0a0e17]">
@@ -230,13 +313,23 @@ export default function Home() {
           isDriving={isDriving}
           onEndRoute={onEndRoute}
         />
-        <EnableAlertsButton />
+        <div className="flex items-center gap-3">
+          <EnableAlertsButton />
+          {incidents.length > 0 && (
+            <span className="text-xs text-[#64748b]">
+              {incidents.length} incident{incidents.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
       </header>
       <div className="flex-1 relative min-h-0">
         <Map
           events={displayEvents}
+          incidents={incidents}
           selectedEvent={selectedEvent}
-          onSelectEvent={setSelectedEvent}
+          selectedIncident={selectedIncident}
+          onSelectEvent={handleSelectEvent}
+          onSelectIncident={handleSelectIncident}
           loading={loading}
           routeCoordinates={routeCoordinates}
           currentPosition={currentPosition}
@@ -248,13 +341,18 @@ export default function Home() {
             onContinue={onContinueHazard}
           />
         )}
-        {selectedEvent && (
+        {selectedIncident && (
+          <IncidentPopup
+            incident={selectedIncident}
+            onClose={() => setSelectedIncident(null)}
+          />
+        )}
+        {selectedEvent && !selectedIncident && (
           <EventPopup
             event={selectedEvent}
             onClose={() => setSelectedEvent(null)}
           />
         )}
-        {/* In-app toasts for new hazards */}
         <div className="absolute bottom-5 right-5 z-[900] flex flex-col gap-2 max-w-sm">
           {toasts.map((t) => (
             <Toast key={t.id} toast={t} onDismiss={dismissToast} />
@@ -273,7 +371,7 @@ function EventPopup({
   onClose: () => void;
 }) {
   const imgUrl = event.image_path
-    ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/image?path=${encodeURIComponent(event.image_path)}`
+    ? `${API_BASE}/image?path=${encodeURIComponent(event.image_path)}`
     : null;
 
   return (
