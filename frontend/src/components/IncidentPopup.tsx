@@ -1,6 +1,7 @@
 "use client";
 
 import type { IncidentItem } from "@/types/event";
+import { ratingLabel } from "@/types/event";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -9,23 +10,18 @@ type Props = {
   onClose: () => void;
 };
 
-const SEVERITY_STYLES: Record<string, { bg: string; text: string; dot: string }> = {
-  critical: { bg: "bg-red-500/20", text: "text-red-300", dot: "bg-red-500" },
-  high: { bg: "bg-orange-500/20", text: "text-orange-300", dot: "bg-orange-500" },
-  moderate: { bg: "bg-yellow-500/20", text: "text-yellow-300", dot: "bg-yellow-500" },
-  low: { bg: "bg-green-500/20", text: "text-green-300", dot: "bg-green-500" },
-  none: { bg: "bg-slate-500/20", text: "text-slate-300", dot: "bg-slate-500" },
-};
+function ratingStyle(rating: number): { bg: string; text: string; dot: string } {
+  if (rating >= 8) return { bg: "bg-red-500/20", text: "text-red-300", dot: "bg-red-500" };
+  if (rating >= 6) return { bg: "bg-orange-500/20", text: "text-orange-300", dot: "bg-orange-500" };
+  if (rating >= 4) return { bg: "bg-yellow-500/20", text: "text-yellow-300", dot: "bg-yellow-500" };
+  if (rating >= 2) return { bg: "bg-green-500/20", text: "text-green-300", dot: "bg-green-500" };
+  return { bg: "bg-slate-500/20", text: "text-slate-300", dot: "bg-slate-500" };
+}
 
 const TYPE_LABELS: Record<string, string> = {
   accident: "Accident",
-  construction: "Construction",
-  stalled_vehicle: "Stalled Vehicle",
-  flooding: "Flooding",
-  police_activity: "Police Activity",
-  normal_traffic: "Normal Traffic",
-  debris: "Debris",
-  fire: "Fire",
+  speed_sensor: "Speed Sensor",
+  hazard: "Hazard",
 };
 
 export function IncidentPopup({ incident, onClose }: Props) {
@@ -33,7 +29,7 @@ export function IncidentPopup({ incident, onClose }: Props) {
     ? `${API_BASE}/image?path=${encodeURIComponent(incident.image_path)}`
     : null;
 
-  const style = SEVERITY_STYLES[incident.severity] || SEVERITY_STYLES.none;
+  const style = ratingStyle(incident.rating);
   const typeLabel = TYPE_LABELS[incident.event_type] || incident.event_type;
 
   return (
@@ -43,7 +39,7 @@ export function IncidentPopup({ incident, onClose }: Props) {
         <div className="flex items-center gap-2">
           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${style.bg} ${style.text} text-xs font-semibold`}>
             <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
-            {incident.severity.toUpperCase()}
+            {incident.rating}/10
           </span>
           <span className="text-xs font-medium text-[#94a3b8]">{typeLabel}</span>
         </div>

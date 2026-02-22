@@ -5,11 +5,12 @@ import { Map } from "@/components/Map";
 import { SearchBar } from "@/components/SearchBar";
 import { NavigationPanel } from "@/components/NavigationPanel";
 import { HazardAlertPopup } from "@/components/HazardAlertPopup";
+import { IncidentAlertPopup } from "@/components/IncidentAlertPopup";
 import { EnableAlertsButton } from "@/components/EnableAlertsButton";
 import { Toast } from "@/components/Toast";
 import { IncidentPopup } from "@/components/IncidentPopup";
 import type { EventItem, IncidentItem } from "@/types/event";
-import { severityToHazardLevel } from "@/types/event";
+import { ratingToHazardLevel } from "@/types/event";
 import { speakAlert } from "@/lib/tts";
 import { getAlertsEnabled, showBrowserNotification } from "@/lib/notifications";
 import {
@@ -41,6 +42,10 @@ export default function Home() {
   const [incidents, setIncidents] = useState<IncidentItem[]>([]);
   const [selectedIncident, setSelectedIncident] = useState<IncidentItem | null>(null);
   const lastIncidentIds = useRef<Set<number>>(new Set());
+
+  // Incident alert popup (reroute prompt)
+  const [incidentAlert, setIncidentAlert] = useState<IncidentItem | null>(null);
+  const dismissedAlertIds = useRef<Set<number>>(new Set());
 
   // Navigation
   const [routeCoordinates, setRouteCoordinates] = useState<LatLng[] | null>(null);
@@ -105,15 +110,15 @@ export default function Home() {
       const alertsOn = getAlertsEnabled();
       for (const inc of data) {
         if (!lastIncidentIds.current.has(inc.id)) {
-          const hazLevel = severityToHazardLevel(inc.severity);
-          if (hazLevel >= 6) {
+          const hazLevel = ratingToHazardLevel(inc.rating);
+          if (hazLevel >= 4) {
             const syntheticEvent: EventItem = {
               id: `inc-${inc.id}`,
               feed_id: "pipeline",
               lat: inc.lat,
               lng: inc.lon,
               occurred_at: inc.created_at,
-              has_police: inc.event_type === "police_activity",
+              has_police: false,
               has_accident: inc.event_type === "accident",
               hazard_level: hazLevel,
               description: inc.notification || inc.description || inc.event_type,
@@ -125,6 +130,10 @@ export default function Home() {
               inc.notification || inc.description || inc.event_type,
             );
             if (alertsOn) speakAlert(syntheticEvent);
+
+            if (!incidentAlert && !dismissedAlertIds.current.has(inc.id)) {
+              setIncidentAlert(inc);
+            }
           }
         }
       }
@@ -147,10 +156,13 @@ export default function Home() {
 
   // ---- Routing ----
   const fetchRoute = useCallback(
-    async (from: LatLng, to: LatLng) => {
+    async (from: LatLng, to: LatLng, avoid?: LatLng) => {
       const [fromLat, fromLng] = from;
       const [toLat, toLng] = to;
-      const url = `${API_BASE}/route?from_lat=${fromLat}&from_lng=${fromLng}&to_lat=${toLat}&to_lng=${toLng}`;
+      let url = `${API_BASE}/route?from_lat=${fromLat}&from_lng=${fromLng}&to_lat=${toLat}&to_lng=${toLng}`;
+      if (avoid) {
+        url += `&avoid_lat=${avoid[0]}&avoid_lng=${avoid[1]}`;
+      }
       const res = await fetch(url);
       if (!res.ok) throw new Error("Route failed");
       const data = await res.json();
@@ -181,15 +193,47 @@ export default function Home() {
     if (!routeCoordinates || !destination || cumDistRef.current.length === 0) return;
     const idx = Math.min(currentIndex, routeCoordinates.length - 1);
     const currentPos = routeCoordinates[idx];
+    const avoidPoint: LatLng | undefined = hazardPopup
+      ? [hazardPopup.event.lat, hazardPopup.event.lng]
+      : undefined;
     if (hazardPopup) dismissedHazardsRef.current.add(hazardPopup.event.id);
     setHazardPopup(null);
-    fetchRoute(currentPos, destination);
+    fetchRoute(currentPos, destination, avoidPoint);
   }, [routeCoordinates, destination, currentIndex, hazardPopup, fetchRoute]);
 
   const onContinueHazard = useCallback(() => {
     if (hazardPopup) dismissedHazardsRef.current.add(hazardPopup.event.id);
     setHazardPopup(null);
   }, [hazardPopup]);
+
+  const onAcceptIncidentReroute = useCallback(async (inc: IncidentItem) => {
+    dismissedAlertIds.current.add(inc.id);
+    setIncidentAlert(null);
+
+    const avoidPoint: LatLng = [inc.lat, inc.lon];
+    const safeDestination: LatLng = destination || [inc.lat + 0.015, inc.lon + 0.015];
+
+    if (routeCoordinates && routeCoordinates.length > 0) {
+      const idx = Math.min(currentIndex, routeCoordinates.length - 1);
+      const currentPos = routeCoordinates[idx];
+      try {
+        await fetchRoute(currentPos, safeDestination, avoidPoint);
+      } catch {
+        // fallback
+      }
+    } else {
+      try {
+        await fetchRoute(avoidPoint, safeDestination);
+      } catch {
+        // fallback
+      }
+    }
+  }, [destination, routeCoordinates, currentIndex, fetchRoute]);
+
+  const onDismissIncidentAlert = useCallback((inc: IncidentItem) => {
+    dismissedAlertIds.current.add(inc.id);
+    setIncidentAlert(null);
+  }, []);
 
   const onEndRoute = useCallback(() => {
     setRouteCoordinates(null);
@@ -229,7 +273,7 @@ export default function Home() {
       ...incidents.map((inc) => ({
         id: `inc-${inc.id}`,
         description: inc.notification || inc.description || inc.event_type,
-        hazard_level: severityToHazardLevel(inc.severity),
+        hazard_level: ratingToHazardLevel(inc.rating),
         lat: inc.lat,
         lng: inc.lon,
       })),
@@ -339,6 +383,13 @@ export default function Home() {
             hazard={hazardPopup}
             onReroute={onReroute}
             onContinue={onContinueHazard}
+          />
+        )}
+        {incidentAlert && !hazardPopup && (
+          <IncidentAlertPopup
+            incident={incidentAlert}
+            onAcceptReroute={onAcceptIncidentReroute}
+            onDismiss={onDismissIncidentAlert}
           />
         )}
         {selectedIncident && (

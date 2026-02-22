@@ -3,7 +3,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_backend = Path(__file__).resolve().parent
+_project_root = _backend.parent
+load_dotenv(_project_root / ".env")
+load_dotenv(_backend / ".env", override=True)
 
 # Gemini (free tier: https://ai.google.dev)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -24,7 +27,6 @@ SPHINX_ENABLED = os.getenv("SPHINX_ENABLED", "false").lower() in ("true", "1", "
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 
 # Path to folder of videos or images (Wizard of Oz feeds). Default: backend/feeds
-_backend = Path(__file__).resolve().parent
 FEEDS_DIR = Path(os.getenv("FEEDS_DIR", str(_backend / "feeds")))
 # Frame capture interval in seconds
 FRAME_INTERVAL = int(os.getenv("FRAME_INTERVAL", "5"))

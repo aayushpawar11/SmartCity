@@ -19,7 +19,7 @@ export type IncidentItem = {
   timestamp: string;
   lat: number;
   lon: number;
-  severity: string;
+  rating: number;
   vehicles_detected: number;
   blocked_lanes: number;
   clearance_minutes: number | null;
@@ -29,24 +29,22 @@ export type IncidentItem = {
   created_at: number;
 };
 
-export function severityToHazardLevel(severity: string): number {
-  switch (severity) {
-    case "critical": return 10;
-    case "high": return 8;
-    case "moderate": return 6;
-    case "low": return 3;
-    case "none": return 1;
-    default: return 5;
-  }
+export function ratingToHazardLevel(rating: number): number {
+  return Math.max(1, Math.min(10, rating));
 }
 
-export function severityColor(severity: string): string {
-  switch (severity) {
-    case "critical": return "#dc2626";
-    case "high": return "#f97316";
-    case "moderate": return "#eab308";
-    case "low": return "#22c55e";
-    case "none": return "#64748b";
-    default: return "#94a3b8";
-  }
+export function ratingColor(rating: number): string {
+  if (rating >= 8) return "#dc2626";
+  if (rating >= 6) return "#f97316";
+  if (rating >= 4) return "#eab308";
+  if (rating >= 2) return "#22c55e";
+  return "#64748b";
+}
+
+export function ratingLabel(rating: number): string {
+  if (rating >= 8) return "critical";
+  if (rating >= 6) return "high";
+  if (rating >= 4) return "moderate";
+  if (rating >= 2) return "low";
+  return "none";
 }

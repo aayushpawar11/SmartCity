@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 
-const DEFAULT_FROM = "34.0289,-84.1986";
-const DEFAULT_TO = "33.7780,-84.3980";
+const DEFAULT_FROM = "Lawrenceville, GA";
+const DEFAULT_TO = "Atlanta, GA";
 
 type Props = {
   onStartRoute: (from: [number, number], to: [number, number]) => void;
@@ -11,30 +11,55 @@ type Props = {
   onEndRoute: () => void;
 };
 
+function parseCoord(s: string): [number, number] | null {
+  const parts = s.trim().split(/[\s,]+/).map(Number);
+  if (parts.length >= 2 && !parts.some(isNaN)) return [parts[0], parts[1]];
+  return null;
+}
+
+async function geocode(query: string): Promise<[number, number] | null> {
+  const coord = parseCoord(query);
+  if (coord) return coord;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "SmartCity-Safety/1.0" },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.length === 0) return null;
+    return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+  } catch {
+    return null;
+  }
+}
+
 export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) {
   const [from, setFrom] = useState(DEFAULT_FROM);
   const [to, setTo] = useState(DEFAULT_TO);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  function parseCoord(s: string): [number, number] | null {
-    const parts = s.trim().split(/[\s,]+/).map(Number);
-    if (parts.length >= 2 && !parts.some(isNaN)) return [parts[0], parts[1]];
-    return null;
-  }
-
-  function handleStart() {
+  async function handleStart() {
     setError("");
-    const fromCoord = parseCoord(from);
-    const toCoord = parseCoord(to);
-    if (!fromCoord) {
-      setError("Invalid From (use lat,lng e.g. 37.77,-122.42)");
-      return;
+    setLoading(true);
+    try {
+      const [fromCoord, toCoord] = await Promise.all([geocode(from), geocode(to)]);
+      if (!fromCoord) {
+        setError(`Could not find "${from}"`);
+        return;
+      }
+      if (!toCoord) {
+        setError(`Could not find "${to}"`);
+        return;
+      }
+      onStartRoute(fromCoord, toCoord);
+    } catch {
+      setError("Geocoding failed — try coordinates instead");
+    } finally {
+      setLoading(false);
     }
-    if (!toCoord) {
-      setError("Invalid To (use lat,lng e.g. 37.78,-122.41)");
-      return;
-    }
-    onStartRoute(fromCoord, toCoord);
   }
 
   return (
@@ -50,22 +75,22 @@ export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) 
       {!isDriving ? (
         <>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-[#94a3b8]">From (lat, lng)</label>
+            <label className="text-xs font-medium text-[#94a3b8]">From</label>
             <input
               type="text"
               value={from}
               onChange={(e) => setFrom(e.target.value)}
-              placeholder="37.77, -122.42"
+              placeholder="e.g. Georgia Tech, Atlanta"
               className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[#f1f5f9] placeholder-[#64748b] focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
             />
           </div>
           <div className="space-y-1.5 mt-3">
-            <label className="text-xs font-medium text-[#94a3b8]">To (lat, lng)</label>
+            <label className="text-xs font-medium text-[#94a3b8]">To</label>
             <input
               type="text"
               value={to}
               onChange={(e) => setTo(e.target.value)}
-              placeholder="37.78, -122.41"
+              placeholder="e.g. Hartsfield-Jackson Airport"
               className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[#f1f5f9] placeholder-[#64748b] focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
             />
           </div>
@@ -73,9 +98,10 @@ export function NavigationPanel({ onStartRoute, isDriving, onEndRoute }: Props) 
           <button
             type="button"
             onClick={handleStart}
-            className="mt-4 w-full rounded-xl bg-accent py-3 text-sm font-semibold text-[#0a0e17] hover:bg-cyan-300 focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-[#0f172a] transition-all shadow-glow-sm"
+            disabled={loading}
+            className="mt-4 w-full rounded-xl bg-accent py-3 text-sm font-semibold text-[#0a0e17] hover:bg-cyan-300 focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-[#0f172a] transition-all shadow-glow-sm disabled:opacity-50"
           >
-            Get directions
+            {loading ? "Finding route…" : "Get directions"}
           </button>
         </>
       ) : (

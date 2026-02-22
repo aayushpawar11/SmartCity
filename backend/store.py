@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     timestamp TEXT,
     lat REAL,
     lon REAL,
-    severity TEXT,
+    rating INTEGER DEFAULT 5,
     vehicles_detected INTEGER,
     blocked_lanes INTEGER,
     clearance_minutes REAL,
@@ -87,7 +87,7 @@ async def save_incident(metadata: dict) -> int:
         cursor = await conn.execute(
             """
             INSERT INTO incidents
-            (event_type, confidence, timestamp, lat, lon, severity,
+            (event_type, confidence, timestamp, lat, lon, rating,
              vehicles_detected, blocked_lanes, clearance_minutes, image_path,
              description, notification, raw_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -98,7 +98,7 @@ async def save_incident(metadata: dict) -> int:
                 ts,
                 metadata.get("lat", 0.0),
                 metadata.get("lon", 0.0),
-                metadata.get("severity", "unknown"),
+                metadata.get("rating", 5),
                 metadata.get("vehicles_detected", 0),
                 metadata.get("blocked_lanes", 0),
                 metadata.get("clearance_minutes"),
@@ -129,7 +129,7 @@ async def get_recent_incidents(limit: int = 50) -> list[dict[str, Any]]:
         conn.row_factory = aiosqlite.Row
         cursor = await conn.execute(
             """
-            SELECT id, event_type, confidence, timestamp, lat, lon, severity,
+            SELECT id, event_type, confidence, timestamp, lat, lon, rating,
                    vehicles_detected, blocked_lanes, clearance_minutes,
                    image_path, description, notification, created_at
             FROM incidents
@@ -147,7 +147,7 @@ async def get_recent_incidents(limit: int = 50) -> list[dict[str, Any]]:
             "timestamp": r["timestamp"],
             "lat": r["lat"],
             "lon": r["lon"],
-            "severity": r["severity"],
+            "rating": r["rating"],
             "vehicles_detected": r["vehicles_detected"],
             "blocked_lanes": r["blocked_lanes"],
             "clearance_minutes": r["clearance_minutes"],

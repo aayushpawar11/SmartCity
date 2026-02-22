@@ -7,11 +7,21 @@ Pipeline orchestration:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+_thread_pool = ThreadPoolExecutor(max_workers=4)
+
+
+async def _run_in_thread(func, *args):
+    """Python 3.8-compatible replacement for asyncio.to_thread."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_thread_pool, functools.partial(func, *args))
 
 from config import FEEDS_DIR, FRAME_INTERVAL, OSRM_BASE_URL
 
@@ -24,20 +34,20 @@ logger = logging.getLogger(__name__)
 
 async def process_frame_pipeline(
     image_bytes: bytes,
-    lat: float = 37.7749,
-    lon: float = -122.4194,
+    lat: float = 33.749,
+    lon: float = -84.388,
+    filename_hint: str = "",
 ) -> dict[str, Any]:
     """Full orchestration: image → classify → store → embed → vector search → reason → route."""
-    # NOTE: Gemini is a placeholder for YOLOv8 in production.
     from analyze import analyze_frame_with_gemini, run_sphinx_decision_engine
     from embeddings import build_incident_text, generate_embedding
     from store import save_incident, update_incident_image_path
     from actian_adapter import upsert_vector, search_similar, _actian_available
     from search import estimate_clearance, detect_false_positive_cluster
 
-    # 1) Gemini (YOLOv8 placeholder): classify the image
-    logger.info("Step 1: Gemini classification (YOLOv8 placeholder)")
-    incident = await analyze_frame_with_gemini(image_bytes)
+    # 1) Classify the image (Gemini, with filename-based fallback)
+    logger.info("Step 1: Gemini classification")
+    incident = await analyze_frame_with_gemini(image_bytes, filename_hint=filename_hint)
     incident["lat"] = lat
     incident["lon"] = lon
 
@@ -75,7 +85,7 @@ async def process_frame_pipeline(
     await upsert_vector(incident_id, vector, metadata={
         "event_type": incident.get("event_type"),
         "confidence": incident.get("confidence"),
-        "severity": incident.get("severity"),
+        "rating": incident.get("rating"),
         "clearance_minutes": incident.get("clearance_minutes"),
     })
 
@@ -96,7 +106,7 @@ async def process_frame_pipeline(
         "estimated_clearance": clearance,
         "is_false_positive": is_fp,
     }
-    decision = await asyncio.to_thread(run_sphinx_decision_engine, sphinx_payload)
+    decision = await _run_in_thread(run_sphinx_decision_engine, sphinx_payload)
 
     # 9) OSRM: route adjustment if rerouting is recommended
     route_data = None
@@ -116,7 +126,7 @@ async def process_frame_pipeline(
             "id": incident_id,
             "event_type": incident.get("event_type", "unknown"),
             "confidence": incident.get("confidence", 0.0),
-            "severity": incident.get("severity", "unknown"),
+            "rating": incident.get("rating", 5),
             "vehicles_detected": incident.get("vehicles_detected", 0),
             "blocked_lanes": incident.get("blocked_lanes", 0),
             "description": incident.get("description", ""),
@@ -150,20 +160,15 @@ async def process_frame_pipeline(
 def _build_notification(incident: dict) -> str:
     """Generate a user-facing notification string from incident data."""
     etype = incident.get("event_type", "unknown")
-    severity = incident.get("severity", "unknown")
+    rating = incident.get("rating", 5)
     labels = {
         "accident": "Accident reported",
-        "police_activity": "Police reported",
-        "construction": "Construction zone",
-        "flooding": "Flooding detected",
-        "stalled_vehicle": "Stalled vehicle",
-        "debris": "Debris on road",
-        "fire": "Fire reported",
-        "normal_traffic": "Normal traffic flow",
+        "speed_sensor": "Speed sensor detected",
+        "hazard": "Road hazard detected",
     }
     base = labels.get(etype, "Incident detected")
-    if severity in ("high", "critical"):
-        return f"{base} ahead — {severity} severity. Consider alternate route."
+    if rating >= 7:
+        return f"{base} ahead — severity {rating}/10. Consider alternate route."
     return f"{base} ahead near your route."
 
 
@@ -231,14 +236,14 @@ from embeddings import get_embedding
 from store import init_db, insert_event
 
 FEED_COORDS: dict[str, tuple[float, float]] = {
-    "camera1": (37.7749, -122.4194),
-    "camera2": (37.7849, -122.4094),
-    "camera3": (37.7649, -122.4294),
-    "traffic": (37.7699, -122.4144),
-    "accident": (37.7729, -122.4164),
-    "police": (37.7789, -122.4124),
-    "flood": (37.7619, -122.4244),
-    "highway": (37.7689, -122.4184),
+    "camera1": (33.749, -84.388),
+    "camera2": (33.760, -84.375),
+    "camera3": (33.740, -84.400),
+    "traffic": (33.755, -84.390),
+    "accident": (33.880, -84.272),
+    "police": (33.770, -84.365),
+    "flood": (33.735, -84.410),
+    "highway": (33.790, -84.350),
 }
 
 
@@ -246,8 +251,8 @@ def _coords_for_feed(feed_id: str) -> tuple[float, float]:
     if feed_id in FEED_COORDS:
         return FEED_COORDS[feed_id]
     h = hash(feed_id) % 10000
-    lat = 37.77 + (h % 100) / 10000
-    lng = -122.42 + (h // 100) / 10000
+    lat = 33.75 + (h % 100) / 10000
+    lng = -84.39 + (h // 100) / 10000
     return (lat, lng)
 
 
@@ -290,8 +295,8 @@ async def run_once() -> list[dict]:
 async def run_on_single_image(
     image_path: Path,
     feed_id: str = "upload",
-    lat: float = 37.7749,
-    lng: float = -122.4194,
+    lat: float = 33.749,
+    lng: float = -84.388,
 ) -> dict | None:
     await init_db()
     analysis = analyze_frame(image_path)

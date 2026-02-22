@@ -3,7 +3,7 @@
 import L from "leaflet";
 import { useEffect, useRef } from "react";
 import type { EventItem } from "@/types/event";
-import { severityColor } from "@/types/event";
+import { ratingColor } from "@/types/event";
 import type { MapInnerProps } from "./Map";
 
 function hazardColor(level: number): string {
@@ -81,8 +81,8 @@ export function MapInner({
     incidentMarkersRef.current.forEach((m) => m.remove());
     incidentMarkersRef.current = [];
     for (const inc of incidents) {
-      const color = severityColor(inc.severity);
-      const isSevere = inc.severity === "high" || inc.severity === "critical";
+      const color = ratingColor(inc.rating);
+      const isSevere = inc.rating >= 7;
       const marker = L.circleMarker([inc.lat, inc.lon], {
         radius: isSevere ? 14 : 10,
         fillColor: color,

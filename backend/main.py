@@ -57,8 +57,8 @@ async def health():
 @app.post("/process-frame")
 async def process_frame(
     file: UploadFile = File(...),
-    lat: float = Query(37.7749, description="Incident latitude"),
-    lon: float = Query(-122.4194, description="Incident longitude"),
+    lat: float = Query(33.749, description="Incident latitude"),
+    lon: float = Query(-84.388, description="Incident longitude"),
 ):
     """Full pipeline: image → Gemini classify → SQL → Actian vector → Sphinx reason → OSRM route.
 
@@ -73,8 +73,9 @@ async def process_frame(
     if not image_bytes:
         raise HTTPException(400, "Empty file")
 
-    logger.info("Processing frame: %.4f, %.4f (%d bytes)", lat, lon, len(image_bytes))
-    result = await process_frame_pipeline(image_bytes, lat=lat, lon=lon)
+    fname = file.filename or ""
+    logger.info("Processing frame: %.4f, %.4f (%d bytes, %s)", lat, lon, len(image_bytes), fname)
+    result = await process_frame_pipeline(image_bytes, lat=lat, lon=lon, filename_hint=fname)
     return result
 
 
@@ -151,12 +152,12 @@ async def seed_feeds():
 
         image_bytes = img_path.read_bytes()
         logger.info("seed-feeds: processing %s (%.4f, %.4f, %d bytes)", img_path.name, lat, lon, len(image_bytes))
-        result = await process_frame_pipeline(image_bytes, lat=lat, lon=lon)
+        result = await process_frame_pipeline(image_bytes, lat=lat, lon=lon, filename_hint=img_path.stem)
         results.append({
             "file": img_path.name,
             "incident_id": result["incident"]["id"],
             "event_type": result["incident"]["event_type"],
-            "severity": result["incident"]["severity"],
+            "rating": result["incident"]["rating"],
             "decision": result["decision"]["action"],
         })
 
@@ -168,11 +169,11 @@ async def seed():
     """Insert demo events so the map has data without running analysis."""
     await init_db()
     demos = [
-        ("camera1", 37.7749, -122.4194, False, True, 8, "Red SUV collision with barrier"),
-        ("camera2", 37.7849, -122.4094, True, False, 5, "Police traffic stop on Main St"),
-        ("camera3", 37.7649, -122.4294, False, False, 3, "Normal traffic flow"),
-        ("flood", 37.7619, -122.4244, False, False, 9, "Flooding on roadway, avoid area"),
-        ("highway", 37.7689, -122.4184, False, True, 7, "Multi-vehicle accident, lane blocked"),
+        ("camera1", 33.749, -84.388, False, True, 8, "Red SUV collision with barrier"),
+        ("camera2", 33.760, -84.375, True, False, 5, "Police traffic stop on Peachtree St"),
+        ("camera3", 33.740, -84.400, False, False, 3, "Normal traffic flow"),
+        ("flood", 33.735, -84.410, False, False, 9, "Flooding on roadway, avoid area"),
+        ("highway", 33.790, -84.350, False, True, 7, "Multi-vehicle accident on I-85, lane blocked"),
     ]
     for feed_id, lat, lng, has_police, has_accident, hazard_level, description in demos:
         emb = get_embedding(description)
@@ -192,12 +193,25 @@ async def route(
     from_lng: float = Query(..., description="Origin longitude"),
     to_lat: float = Query(..., description="Destination latitude"),
     to_lng: float = Query(..., description="Destination longitude"),
+    avoid_lat: float = Query(None, description="Incident latitude to avoid"),
+    avoid_lng: float = Query(None, description="Incident longitude to avoid"),
 ):
-    """Get driving route via OSRM."""
+    """Get driving route via OSRM. When avoid_lat/avoid_lng are set, returns an alternative route."""
     import httpx
+    import math
 
-    url = f"{OSRM_BASE_URL}/route/v1/driving/{from_lng},{from_lat};{to_lng},{to_lat}"
-    params = {"overview": "full", "geometries": "geojson"}
+    waypoints = f"{from_lng},{from_lat};{to_lng},{to_lat}"
+    params = {"overview": "full", "geometries": "geojson", "alternatives": "true"}
+
+    if avoid_lat is not None and avoid_lng is not None:
+        bearing = math.atan2(to_lng - from_lng, to_lat - from_lat)
+        perp = bearing + math.pi / 2
+        offset = 0.02
+        via_lat = avoid_lat + offset * math.cos(perp)
+        via_lng = avoid_lng + offset * math.sin(perp)
+        waypoints = f"{from_lng},{from_lat};{via_lng},{via_lat};{to_lng},{to_lat}"
+
+    url = f"{OSRM_BASE_URL}/route/v1/driving/{waypoints}"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.get(url, params=params)
@@ -205,15 +219,31 @@ async def route(
             data = r.json()
     except Exception as e:
         raise HTTPException(502, f"Routing failed: {e}")
-    if data.get("code") != "Ok":
+    if data.get("code") != "Ok" or not data.get("routes"):
         raise HTTPException(404, "No route found")
-    leg = data["routes"][0]["legs"][0]
-    coords = data["routes"][0]["geometry"]["coordinates"]
+
+    chosen = data["routes"][0]
+
+    if avoid_lat is not None and avoid_lng is not None and len(data["routes"]) > 1:
+        best_dist = 0
+        for rt in data["routes"]:
+            route_coords = rt["geometry"]["coordinates"]
+            min_d = min(
+                math.sqrt((c[1] - avoid_lat) ** 2 + (c[0] - avoid_lng) ** 2)
+                for c in route_coords
+            )
+            if min_d > best_dist:
+                best_dist = min_d
+                chosen = rt
+
+    coords = chosen["geometry"]["coordinates"]
     coordinates = [[c[1], c[0]] for c in coords]
+    total_distance = sum(leg["distance"] for leg in chosen["legs"])
+    total_duration = sum(leg["duration"] for leg in chosen["legs"])
     return {
         "coordinates": coordinates,
-        "distance_meters": leg["distance"],
-        "duration_seconds": leg["duration"],
+        "distance_meters": total_distance,
+        "duration_seconds": total_duration,
     }
 
 
